@@ -28,33 +28,33 @@ set(PICO_BOARD pico CACHE STRING "Board type")
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
 
-project(blink C CXX ASM)
+project(utsmotorcontroller C CXX ASM)
 
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(blink
-    blink.c
+add_executable(utsmotorcontroller
+utsmotorcontroller.c
     )
 
 # pull in common dependencies
-target_link_libraries(blink pico_stdlib)
+target_link_libraries(utsmotorcontroller pico_stdlib)
 
 if (PICO_CYW43_SUPPORTED)
-    target_link_libraries(blink pico_cyw43_arch_none)
+    target_link_libraries(utsmotorcontroller pico_cyw43_arch_none)
 endif()
 
 
-target_link_libraries(blink pico_stdlib hardware_pwm hardware_adc)
+target_link_libraries(utsmotorcontroller pico_stdlib hardware_pwm hardware_adc)
 
-pico_enable_stdio_usb(blink 1)	# Enable USB printf output
-pico_enable_stdio_uart(blink 0)	# Disable serial printf output
+pico_enable_stdio_usb(utsmotorcontroller 1)	# Enable USB printf output
+pico_enable_stdio_uart(utsmotorcontroller 0)	# Disable serial printf output
 
-pico_add_extra_outputs(blink)
+pico_add_extra_outputs(utsmotorcontroller)
 
 # create map/bin/hex file etc.
-pico_add_extra_outputs(blink)
+pico_add_extra_outputs(utsmotorcontroller)
 
 # add url via pico_set_program_url

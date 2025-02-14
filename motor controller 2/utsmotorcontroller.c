@@ -1,3 +1,13 @@
+//Comutation Orders
+
+// ABC          
+// A LOW, B HIGH 
+// A LOW, C HIGH
+// B LOW, C HIGH
+// B LOW, A HIGH
+// C LOW, A HIGH
+// C LOW, B HIGH
+
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "hardware/pwm.h"
@@ -8,12 +18,6 @@
 #include "hardware/sync.h"
 #include "hardware/uart.h"
 #include "pico/stdlib.h"
-
-// Pico W devices use a GPIO on the WIFI chip for the LED,
-// so when building for Pico W, CYW43_WL_GPIO_LED_PIN will be defined
-#ifdef CYW43_WL_GPIO_LED_PIN
-#include "pico/cyw43_arch.h"
-#endif
 
 #ifndef LED_DELAY_MS
 #define LED_DELAY_MS 100
@@ -27,9 +31,6 @@ int pico_led_init(void) {
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     return PICO_OK;
-#elif defined(CYW43_WL_GPIO_LED_PIN)
-    // For Pico W devices we need to initialise the driver etc
-    return cyw43_arch_init();
 #endif
 }
 
@@ -38,9 +39,6 @@ void pico_set_led(bool led_on) {
 #if defined(PICO_DEFAULT_LED_PIN)
     // Just set the GPIO on or off
     gpio_put(PICO_DEFAULT_LED_PIN, led_on);
-#elif defined(CYW43_WL_GPIO_LED_PIN)
-    // Ask the wifi "driver" to set the GPIO on or off
-    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, led_on);
 #endif
 }
 ///////
@@ -54,16 +52,6 @@ const bool CURRENT_CONTROL = false;          // Use current control or duty cycl
 const int PHASE_MAX_CURRENT_MA = 6000;      // If using current control, the maximum phase current allowed
 const int BATTERY_MAX_CURRENT_MA = 3000;    // If using current control, the maximum battery current allowed
 const int CURRENT_CONTROL_LOOP_GAIN = 200;  // Adjusts the speed of the current control loop
-
-//Comutation Orders
-
-// ABC          
-// A LOW, B HIGH 
-// A LOW, C HIGH
-// B LOW, C HIGH
-// B LOW, A HIGH
-// C LOW, A HIGH
-// C LOW, B HIGH
 
 // End user config section -----------------------------
 
