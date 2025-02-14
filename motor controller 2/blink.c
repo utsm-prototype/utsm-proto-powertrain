@@ -108,6 +108,13 @@ int adc_isense = 0;
 int adc_vsense = 0;
 int adc_throttle = 0;
 
+int optical1_index = -1;
+int optical2_index = -1;
+
+int optical1_order[12] = {0b101, 0b100, 0b100, 0b110, 0b110, 0b010, 0b010, 0b011, 0b011, 0b001, 0b001, 0b101};
+int optical2_order[12] = {0b001, 0b001, 0b101, 0b101, 0b100, 0b100, 0b110, 0b110, 0b010, 0b010, 0b011, 0b011};
+int optical_order[12] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+
 int adc_bias = 0;
 int duty_cycle = 0;
 int voltage_mv = 0;
@@ -326,8 +333,7 @@ void init_hardware() {
     pwm_set_mask_enabled(0x07); // Enable our three PWM timers
 }
 
-uint get_optical_state() {
-    // Initialize counters for oversampling
+uint read_optical_encoders(){
     uint opt1Counts[] = {0, 0, 0};
     uint opt2Counts[] = {0, 0, 0};
 
@@ -350,42 +356,53 @@ uint get_optical_state() {
         if (opt1Counts[i] > ENCODER_OVERSAMPLE / 2) state_OPT_1 |= (1 << (2 - i)); // Encode as 3-bit value
         if (opt2Counts[i] > ENCODER_OVERSAMPLE / 2) state_OPT_2 |= (1 << (2 - i)); // Encode as 3-bit value
     }
-
     // Combine state_OPT_1 and state_OPT_2 into a single value
     uint combined_state = (state_OPT_1 << 3) | state_OPT_2;
+    return combined_state;
+}
 
-    switch (combined_state) {
-        case 41: return 0; // 0b101 001
-        case 33: return 1; // 0b100 001
-        case 37: return 2; // 0b100 101
-        case 53: return 3; // 0b110 101
-        case 52: return 4; // 0b110 100
-        case 20: return 5; // 0b010 100
+uint get_optical_state() {
+    uint optical_state = read_optical_encoders();
 
-        case 22: return 0; // 0b010 110
-        case 30: return 1; // 0b011 110
-        case 26: return 2; // 0b011 010
-        case 10: return 3; // 0b001 010
-        case 11: return 4; // 0b001 011
-        case 43: return 5; // 0b101 011
-
-        // Reversed cables
-        case 13: return 0; // 0b001 101
-        case 12: return 1; // 0b001 100
-        case 44: return 2; // 0b101 100
-        case 46: return 3; // 0b101 110
-        case 38: return 4; // 0b100 110
-        case 34: return 5; // 0b100 010
-
-        case 50: return 0; // 0b110 010
-        case 51: return 1; // 0b110 011
-        case 19: return 2; // 0b010 011
-        case 17: return 3; // 0b010 001
-        case 25: return 4; // 0b011 001
-        case 29: return 5; // 0b011 101
-
-        default: return 0; // Invalid state
+    if (optical_state == optical_order[0]) {
+        return 0; // Invalid state
     }
+    else if (optical_state == optical_order[1]){
+        return 1;
+    }
+    else if (optical_state == optical_order[2]){
+        return 2;
+    }
+    else if (optical_state == optical_order[3]){
+        return 3;
+    }
+    else if (optical_state == optical_order[4]){
+        return 4;
+    }
+    else if (optical_state == optical_order[5]){
+        return 5;
+    }
+    else if (optical_state == optical_order[6]){
+        return 0;
+    }
+    else if (optical_state == optical_order[7]){
+        return 1;
+    }
+    else if (optical_state == optical_order[8]){
+        return 2;
+    }
+    else if (optical_state == optical_order[9]){
+        return 3;
+    }
+    else if (optical_state == optical_order[10]){
+        return 4;
+    }
+    else if (optical_state == optical_order[11]){
+        return 5;
+    }
+    else {
+        return 0; // Invalid state
+    }    
 }
 
 void commutate_open_loop()
@@ -401,6 +418,70 @@ void commutate_open_loop()
     }
 }
 
+void startup_calibration(){
+    // send to motor state 5 then read the optical encoders
+    writePWM(5 % 6, 25, false);
+    sleep_ms(50);
+    uint start_state1 = read_optical_encoders();
+
+    writePWM(0 % 6, 25, false);
+    sleep_ms(50);
+    // send to motor state 0 then read the optical encoders
+    uint start_state2 = read_optical_encoders();
+
+    int optical1_0 = (start_state1 >> 3) & 0b111;  // Shift right by 3, then mask
+    int optical2_0 = start_state1 & 0b111;
+
+    int optical1_1 = (start_state1 >> 3) & 0b111;  // Shift right by 3, then mask
+    int optical2_1 = start_state1 & 0b111;
+
+    // find current indecies of optical1 and optical2
+    for (int i = 0; i < 12; i++){
+        if (optical1_0 == optical1_order[i]){
+            optical1_index = i;
+        }
+        if (optical2_0 == optical2_order[i]){
+            optical2_index = i;
+        }
+        if (optical1_0 != -1 && optical2_0 != -1){
+            break;
+        }
+    }
+    if (optical1_0 == optical1_1){
+        optical1_index = optical1_index+1;    
+    }
+    if (optical2_0 == optical2_1){
+        optical2_index = optical2_index+1;    
+    }
+    int a = 0;
+    int b = 0;
+    for (int i = 0; i<12; i++){
+        if (a + optical1_index > 11){
+            a = 0;
+        }
+        if (b + optical2_index > 11){
+            b = 0;
+        }
+        optical_order[i] = (optical1_order[optical1_index+a] << 3) | optical2_order[optical2_index+b];
+        a++;
+        b++;
+    }
+    
+    // led blink to indicate calibration is done
+    gpio_put(LED_PIN, !gpio_get(LED_PIN));  // Toggle the LED
+    sleep_ms(100);
+    gpio_put(LED_PIN, !gpio_get(LED_PIN));  // Toggle the LED
+    sleep_ms(100);
+    gpio_put(LED_PIN, !gpio_get(LED_PIN));  // Toggle the LED
+    sleep_ms(1000);
+    gpio_put(LED_PIN, !gpio_get(LED_PIN));  // Toggle the LED
+    sleep_ms(100);
+    gpio_put(LED_PIN, !gpio_get(LED_PIN));  // Toggle the LED
+    sleep_ms(100);
+    gpio_put(LED_PIN, !gpio_get(LED_PIN));  // Toggle the LED
+    sleep_ms(1000);
+}
+
 int main() {
     init_hardware();
 
@@ -408,6 +489,8 @@ int main() {
     hard_assert(rc == PICO_OK);
 
     sleep_ms(1000);
+
+    startup_calibration();
 
     pwm_set_irq_enabled(A_PWM_SLICE, true); // Enables interrupts, starting motor commutation
 
