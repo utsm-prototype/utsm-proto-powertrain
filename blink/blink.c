@@ -7,18 +7,8 @@
 #include "hardware/gpio.h"
 #include "hardware/sync.h"
 #include "hardware/uart.h"
-
-
-///////
-
-
-/**
- * Copyright (c) 2020 Raspberry Pi (Trading) Ltd.
- *
- * SPDX-License-Identifier: BSD-3-Clause
- */
-
 #include "pico/stdlib.h"
+
 // Pico W devices use a GPIO on the WIFI chip for the LED,
 // so when building for Pico W, CYW43_WL_GPIO_LED_PIN will be defined
 #ifdef CYW43_WL_GPIO_LED_PIN
@@ -53,19 +43,9 @@ void pico_set_led(bool led_on) {
     cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, led_on);
 #endif
 }
-
-
 ///////
 
-
-
 // Begin user config section ---------------------------
-
-const bool IDENTIFY_HALLS_ON_BOOT = false;   // If true, controller will initialize the hall table by slowly spinning the motor
-const bool IDENTIFY_HALLS_REVERSE = false;  // If true, will initialize the hall table to spin the motor backwards
-
-uint8_t hallToMotor[8] = {255, 255, 255, 255, 255, 255, 255, 255};  // Default hall table. Overwrite this with the output of the hall auto-identification 
-// uint8_t hallToMotor[8] = {255, 2, 0, 1, 4, 3, 5, 255};  // Example hall table
 
 const int THROTTLE_LOW = 600;               // ADC value corresponding to minimum throttle, 0-4095
 const int THROTTLE_HIGH = 2650;             // ADC value corresponding to maximum throttle, 0-4095
@@ -75,27 +55,38 @@ const int PHASE_MAX_CURRENT_MA = 6000;      // If using current control, the max
 const int BATTERY_MAX_CURRENT_MA = 3000;    // If using current control, the maximum battery current allowed
 const int CURRENT_CONTROL_LOOP_GAIN = 200;  // Adjusts the speed of the current control loop
 
+//Comutation Orders
+
+// ABC          
+// A LOW, B HIGH 
+// A LOW, C HIGH
+// B LOW, C HIGH
+// B LOW, A HIGH
+// C LOW, A HIGH
+// C LOW, B HIGH
+
 // End user config section -----------------------------
 
 const uint LED_PIN = 25;
+const uint ENCODER_OVERSAMPLE = 6;
+
 const uint AH_PIN = 16;
 const uint AL_PIN = 17;
 const uint BH_PIN = 18;
 const uint BL_PIN = 19;
 const uint CH_PIN = 20;
 const uint CL_PIN = 21;
-// const uint HALL_1_PIN = 13;
-// const uint HALL_2_PIN = 14;
-// const uint HALL_3_PIN = 15;
 
+// Optical Encoder Pin Definitions
+// Encoder 1
 const uint OPT_U1_PIN = 10;
 const uint OPT_V1_PIN = 11;
 const uint OPT_W1_PIN = 12;
+
+// Encoder 2
 const uint OPT_U2_PIN = 13;
 const uint OPT_V2_PIN = 14;
 const uint OPT_W2_PIN = 15;
-
-
 
 const uint ISENSE_PIN = 26;
 const uint VSENSE_PIN = 27;
@@ -107,14 +98,11 @@ const uint C_PWM_SLICE = 2;
 
 const uint F_PWM = 16000;   // Desired PWM frequency
 const uint FLAG_PIN = 2;
-const uint HALL_OVERSAMPLE = 8;
 
 const int DUTY_CYCLE_MAX = 65535;
 const int CURRENT_SCALING = 3.3 / 0.0005 / 20 / 4096 * 1000;
 const int VOLTAGE_SCALING = 3.3 / 4096 * (47 + 2.2) / 2.2 * 1000;
 const int ADC_BIAS_OVERSAMPLE = 1000;
-
-const int HALL_IDENTIFY_DUTY_CYCLE = 25;
 
 int adc_isense = 0;
 int adc_vsense = 0;
@@ -125,19 +113,18 @@ int duty_cycle = 0;
 int voltage_mv = 0;
 int current_ma = 0;
 int current_target_ma = 0;
-int hall = 0;
+int optical = 0;
 uint motorState = 0;
 int fifo_level = 0;
 uint64_t ticks_since_init = 0;
 
-uint get_opti();
+uint get_optical_state();
 void writePWM(uint motorState, uint duty, bool synchronous);
 uint8_t read_throttle();
 
-
 void on_adc_fifo() {
     // This interrupt is where the magic happens. This is fired once the ADC conversions have finished (roughly 6us for 3 conversions)
-    // This reads the hall sensors, determines the motor state to switch to, and reads the current sensors and throttle to
+    // This reads the optical sensors, determines the motor state to switch to, and reads the current sensors and throttle to
     // determine the desired duty cycle. This takes ~7us to complete.
 
     uint32_t flags = save_and_disable_interrupts(); // Disable interrupts for the time-critical reading ADC section. USB interrupts may interfere
@@ -160,9 +147,7 @@ void on_adc_fifo() {
         return;
     }
 
-    hall = get_opti();                 // Read the hall sensors
-    motorState = hall - 1;
-    // motorState = hallToMotor[hall];     // Convert the current hall reading to the desired motor state
+    motorState = get_optical_state();                 // Read the optical sensors
 
     int throttle = ((adc_throttle - THROTTLE_LOW) * 256) / (THROTTLE_HIGH - THROTTLE_LOW);  // Scale the throttle value read from the ADC
     throttle = MAX(0, MIN(255, throttle));      // Clamp to 0-255
@@ -248,9 +233,7 @@ void writePWM(uint motorState, uint duty, bool synchronous)
     {
         complement = MAX(0, 248 - (int)duty);    // Provide switching deadtime by having duty + complement < 255
     }
-    // motorState = motorState;
-    // printf("state:%d\n", motorState);
-    
+
     if(motorState == 0)                         // LOW A, HIGH B
         writePhases(0, duty, 0, 255, complement, 0);
     else if(motorState == 1)                    // LOW A, HIGH C
@@ -267,31 +250,35 @@ void writePWM(uint motorState, uint duty, bool synchronous)
         writePhases(0, 0, 0, 0, 0, 0);
 }
 
-
 void init_hardware() {
     // Initialize all peripherals
 
     stdio_init_all();
 
-    gpio_init(LED_PIN);     // Set LED and FLAG pin as outputs
+    // Set LED and FLAG pin as outputs
+    gpio_init(LED_PIN);     
     gpio_set_dir(LED_PIN, GPIO_OUT);
     gpio_init(FLAG_PIN);
     gpio_set_dir(FLAG_PIN, GPIO_OUT);
 
-    gpio_init(OPT_U1_PIN);  // Set up hall sensor pins
+    // Set up optical sensor 1 pins
+    gpio_init(OPT_U1_PIN);
     gpio_set_dir(OPT_U1_PIN, GPIO_IN);
     gpio_init(OPT_V1_PIN);
     gpio_set_dir(OPT_V1_PIN, GPIO_IN);
     gpio_init(OPT_W1_PIN);
     gpio_set_dir(OPT_W1_PIN, GPIO_IN);
-    gpio_init(OPT_U2_PIN);  // Set up hall sensor pins
+
+    // Set up optical sensor 2 pins
+    gpio_init(OPT_U2_PIN);  
     gpio_set_dir(OPT_U2_PIN, GPIO_IN);
     gpio_init(OPT_V2_PIN);
     gpio_set_dir(OPT_V2_PIN, GPIO_IN);
     gpio_init(OPT_W2_PIN);
     gpio_set_dir(OPT_W2_PIN, GPIO_IN);
 
-    gpio_set_function(AH_PIN, GPIO_FUNC_PWM);   // Set gate control pins as output
+    // Set gate control pins as output
+    gpio_set_function(AH_PIN, GPIO_FUNC_PWM);   
     gpio_set_function(AL_PIN, GPIO_FUNC_PWM);
     gpio_set_function(BH_PIN, GPIO_FUNC_PWM);
     gpio_set_function(BL_PIN, GPIO_FUNC_PWM);
@@ -339,101 +326,72 @@ void init_hardware() {
     pwm_set_mask_enabled(0x07); // Enable our three PWM timers
 }
 
-uint get_opti() {
-    // Read the hall sensors with oversampling. Hall sensor readings can be noisy, which produces commutation "glitches".
-    // This reads the hall sensors multiple times, then takes the majority reading to reduce noise. Takes ~200 nanoseconds
+uint get_optical_state() {
+    // Initialize counters for oversampling
+    uint opt1Counts[] = {0, 0, 0};
+    uint opt2Counts[] = {0, 0, 0};
 
-    // uint hallCounts[] = {0, 0, 0};
-    // for(uint i = 0; i < HALL_OVERSAMPLE; i++) // Read all the hall pins repeatedly, count votes
-    // {
-    //     hallCounts[0] += gpio_get(HALL_1_PIN);
-    //     hallCounts[1] += gpio_get(HALL_2_PIN);
-    //     hallCounts[2] += gpio_get(HALL_3_PIN);
-    // }
+    // Oversampling loop
+    for(uint i = 0; i < ENCODER_OVERSAMPLE; i++) {
+        opt1Counts[0] += gpio_get(OPT_U1_PIN);
+        opt1Counts[1] += gpio_get(OPT_V1_PIN);
+        opt1Counts[2] += gpio_get(OPT_W1_PIN);
 
-    // uint hall_raw = 0;
-    // for(uint i = 0; i < 3; i++)
-    //     if (hallCounts[i] > HALL_OVERSAMPLE / 2)    // If more than half the readings are positive,
-    //         hall_raw |= 1<<i;                       // set the i-th bit high
+        opt2Counts[0] += gpio_get(OPT_U2_PIN);
+        opt2Counts[1] += gpio_get(OPT_V2_PIN);
+        opt2Counts[2] += gpio_get(OPT_W2_PIN);
+    }
 
-    uint state_OPT_1 = gpio_get(OPT_U1_PIN) * 4 +
-                       gpio_get(OPT_V1_PIN) * 2 +
-                       gpio_get(OPT_W1_PIN) * 1;
+    // Compute final state based on majority vote
+    uint state_OPT_1 = 0;
+    uint state_OPT_2 = 0;
 
-    uint state_OPT_2 = gpio_get(OPT_U2_PIN) * 4 +
-                       gpio_get(OPT_V2_PIN) * 2 +
-                       gpio_get(OPT_W2_PIN) * 1;
+    for (uint i = 0; i < 3; i++) {
+        if (opt1Counts[i] > ENCODER_OVERSAMPLE / 2) state_OPT_1 |= (1 << (2 - i)); // Encode as 3-bit value
+        if (opt2Counts[i] > ENCODER_OVERSAMPLE / 2) state_OPT_2 |= (1 << (2 - i)); // Encode as 3-bit value
+    }
 
     // Combine state_OPT_1 and state_OPT_2 into a single value
     uint combined_state = (state_OPT_1 << 3) | state_OPT_2;
 
-    switch (combined_state) { //uvw uvw
-        case 41: return 1; // 0b101 001
-        case 33: return 2; // 0b100 001
-        case 37: return 3; // 0b100 101
-        case 53: return 4; // 0b110 101
-        case 52: return 5; // 0b110 100
-        case 20: return 6; // 0b010 100
+    switch (combined_state) {
+        case 41: return 0; // 0b101 001
+        case 33: return 1; // 0b100 001
+        case 37: return 2; // 0b100 101
+        case 53: return 3; // 0b110 101
+        case 52: return 4; // 0b110 100
+        case 20: return 5; // 0b010 100
 
-        case 22: return 1; // 0b010 110
-        case 30: return 2; // 0b011 110
-        case 26: return 3; // 0b011 010
-        case 10: return 4; // 0b001 010
-        case 11: return 5; // 0b001 011
-        case 43: return 6; // 0b101 011
+        case 22: return 0; // 0b010 110
+        case 30: return 1; // 0b011 110
+        case 26: return 2; // 0b011 010
+        case 10: return 3; // 0b001 010
+        case 11: return 4; // 0b001 011
+        case 43: return 5; // 0b101 011
+
+        // Reversed cables
+        case 13: return 0; // 0b001 101
+        case 12: return 1; // 0b001 100
+        case 44: return 2; // 0b101 100
+        case 46: return 3; // 0b101 110
+        case 38: return 4; // 0b100 110
+        case 34: return 5; // 0b100 010
+
+        case 50: return 0; // 0b110 010
+        case 51: return 1; // 0b110 011
+        case 19: return 2; // 0b010 011
+        case 17: return 3; // 0b010 001
+        case 25: return 4; // 0b011 001
+        case 29: return 5; // 0b011 101
 
         default: return 0; // Invalid state
     }
-
-// 1    LOW A   HIGH B
-// 2    LOW A   HIGH C 
-// 3    LOW B   HIGH C 
-// 4    LOW B   HIGH A 
-// 5    LOW C   HIGH A 
-// 6    LOW C   HIGH B 
-
-    
-
-    // return hall_raw;    // Range is 0-7. However, 0 and 7 are invalid hall states
-}
-
-void identify_halls()
-{
-    // This is the magic function which sets the hallToMotor commutation table. This allows
-    // you to plug in the motor and hall wires in any order, and the controller figures out the order.
-    // This works by PWM-ing to all of the "half states", such as 0.5, by switching rapidly between state 0 and 1.
-    // This commutates to all half-states and reads the corresponding hall value. Then, since electrical position
-    // should lead rotor position by 90 degrees, for this hall state, save a motor state 1.5 steps ahead.
-
-    sleep_ms(2000);
-    for(uint i = 0; i < 6; i++)
-    {
-        for(uint j = 0; j < 1000; j++)       // Commutate to a half-state long enough to allow the rotor to stop moving
-        {
-            sleep_us(500);
-            writePWM(i, HALL_IDENTIFY_DUTY_CYCLE, false);
-            sleep_us(500);
-            writePWM((i + 1) % 6, HALL_IDENTIFY_DUTY_CYCLE, false);     // PWM to the next half-state
-        }
-
-        if(IDENTIFY_HALLS_REVERSE)
-            hallToMotor[get_opti()] = (i + 5) % 6;     // If the motor should spin backwards, save a motor state of -1.5 steps
-        else
-            hallToMotor[get_opti()] = (i + 2) % 6;     // If the motor should spin forwards, save a motor state of +1.5 steps
-    }
-
-    writePWM(0, 0, false);      // Turn phases off
-
-    printf("hallToMotor array:\n");     // Print out the array
-    for(uint8_t i = 0; i < 8; i++)
-        printf("%d, ", hallToMotor[i]);
-    printf("\nIf any values are 255 except the first and last, auto-identify failed. Otherwise, save this table in code.\n");
 }
 
 void commutate_open_loop()
 {
     // A useful function to debug electrical problems with the board.
-    // This slowly advances the motor commutation without reading hall sensors. The motor should slowly spin
+    // This slowly advances the motor commutation without reading optical sensors. The motor should slowly spin
     int state = 0;
     while(true)
     {
@@ -443,44 +401,21 @@ void commutate_open_loop()
     }
 }
 
-
 int main() {
     init_hardware();
 
-    
     int rc = pico_led_init();
     hard_assert(rc == PICO_OK);
-    /*
-    while (true) {
-        pico_set_led(true);
-        sleep_ms(LED_DELAY_MS);
-        pico_set_led(false);
-        sleep_ms(LED_DELAY_MS);
-    }
-    
-    while(true){
-        pwm_set_both_levels(A_PWM_SLICE, 100, 100);
-        pico_set_led(true);
-        sleep_ms(LED_DELAY_MS);
-        pico_set_led(false);
-        sleep_ms(LED_DELAY_MS);
-    }
-    */
-    // commutate_open_loop();   // May be helpful for debugging electrical problems
-
-    if(IDENTIFY_HALLS_ON_BOOT)
-        identify_halls();
 
     sleep_ms(1000);
 
     pwm_set_irq_enabled(A_PWM_SLICE, true); // Enables interrupts, starting motor commutation
 
     while (true) {
-        printf("%6d, %6d, %6d, %6d, %2d, %2d\n", current_ma, current_target_ma, duty_cycle, voltage_mv, hall, motorState);
+        printf("%6d, %6d, %6d, %6d, %2d, %2d\n", current_ma, current_target_ma, duty_cycle, voltage_mv, optical, motorState);
         gpio_put(LED_PIN, !gpio_get(LED_PIN));  // Toggle the LED
         sleep_ms(100);
     }
 
     return 0;
 }
-
